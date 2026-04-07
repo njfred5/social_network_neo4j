@@ -1,49 +1,19 @@
 # social_network.py
 from flask import Flask, render_template, request, jsonify, redirect, url_for, session
-import sqlite3
 from dataclasses import dataclass
 from typing import List, Optional
+from neo4j import GraphDatabase
 
 # ======================
 # Database Access Layer
 # ======================
+
 class Database:
-    def __init__(self, db_name='social_network.db'):
-        self.db_name = db_name
-        self._init_db()
-    
-    def _init_db(self):
-        with self._get_connection() as conn:
-            conn.execute('''
-                CREATE TABLE IF NOT EXISTS users (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    username TEXT UNIQUE NOT NULL,
-                    name TEXT NOT NULL
-                )
-            ''')
-            
-            conn.execute('''
-                CREATE TABLE IF NOT EXISTS posts (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER NOT NULL,
-                    content TEXT NOT NULL,
-                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY(user_id) REFERENCES users(id)
-                )
-            ''')
-            
-            conn.execute('''
-                CREATE TABLE IF NOT EXISTS followers (
-                    follower_id INTEGER NOT NULL,
-                    followee_id INTEGER NOT NULL,
-                    PRIMARY KEY(follower_id, followee_id),
-                    FOREIGN KEY(follower_id) REFERENCES users(id),
-                    FOREIGN KEY(followee_id) REFERENCES users(id)
-                )
-            ''')
-    
-    def _get_connection(self):
-        return sqlite3.connect(self.db_name)
+    def __init__(self, uri, user, password):
+        self.driver = GraphDatabase.driver(uri, auth=(user, password))
+
+    def close(self):
+        self.driver.close()
     
     # User operations
     def create_user(self, username: str, name: str) -> int:
@@ -152,7 +122,12 @@ class Database:
 # ======================
 app = Flask(__name__)
 app.secret_key = 'your_secret_key_here'
-db = Database()
+db = Database(
+    uri="neo4j+s://3a1fff2f.databases.neo4j.io",
+    user="3a1fff2f",
+    password="K7G9XTVGMexZKK98DNHqraCM5wl2yVL2_7x7VPV6kaw"
+)
+
 
 # Sample data initialization
 with app.app_context():
