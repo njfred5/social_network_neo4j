@@ -168,7 +168,13 @@ db = Database(
 )
 
 
-# Sample data initializatio
+# Sample data initialization
+with app.app_context():
+    # Create some sample users if they don't exist
+    if not db.get_all_users():
+        db.create_user('alice', 'Alice Smith')
+        db.create_user('bob', 'Bob Johnson')
+        db.create_user('charlie', 'Charlie Brown')
 
 # ======================
 # API Endpoints
