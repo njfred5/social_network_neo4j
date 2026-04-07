@@ -8,114 +8,153 @@ from neo4j import GraphDatabase
 # Database Access Layer
 # ======================
 
+from neo4j import GraphDatabase
+
 class Database:
     def __init__(self, uri, user, password):
         self.driver = GraphDatabase.driver(uri, auth=(user, password))
 
     def close(self):
         self.driver.close()
-    
-    # User operations
-    def create_user(self, username: str, name: str) -> int:
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('INSERT INTO users (username, name) VALUES (?, ?)', (username, name))
-            return cursor.lastrowid
-    
-    def get_user(self, user_id: int) -> Optional[dict]:
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('SELECT id, username, name FROM users WHERE id = ?', (user_id,))
-            row = cursor.fetchone()
-            return {'id': row[0], 'username': row[1], 'name': row[2]} if row else None
-    
-    def get_all_users(self) -> List[dict]:
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('SELECT id, username, name FROM users')
-            return [{'id': row[0], 'username': row[1], 'name': row[2]} for row in cursor.fetchall()]
-    
-    # Post operations
-    def create_post(self, user_id: int, content: str) -> int:
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('INSERT INTO posts (user_id, content) VALUES (?, ?)', (user_id, content))
-            return cursor.lastrowid
-    
-    def get_posts_by_user(self, user_id: int) -> List[dict]:
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                SELECT p.id, p.content, p.timestamp, u.username, u.name 
-                FROM posts p JOIN users u ON p.user_id = u.id 
-                WHERE p.user_id = ?
-                ORDER BY p.timestamp DESC
-            ''', (user_id,))
-            return [{
-                'id': row[0],
-                'content': row[1],
-                'timestamp': row[2],
-                'username': row[3],
-                'name': row[4]
-            } for row in cursor.fetchall()]
-    
-    def get_feed(self, user_id: int) -> List[dict]:
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                SELECT p.id, p.content, p.timestamp, u.username, u.name 
-                FROM posts p 
-                JOIN users u ON p.user_id = u.id
-                JOIN followers f ON p.user_id = f.followee_id
-                WHERE f.follower_id = ?
-                ORDER BY p.timestamp DESC
-            ''', (user_id,))
-            return [{
-                'id': row[0],
-                'content': row[1],
-                'timestamp': row[2],
-                'username': row[3],
-                'name': row[4]
-            } for row in cursor.fetchall()]
-    
-    # Follow operations
-    def follow_user(self, follower_id: int, followee_id: int) -> bool:
-        with self._get_connection() as conn:
-            try:
-                conn.execute('INSERT INTO followers (follower_id, followee_id) VALUES (?, ?)', 
-                           (follower_id, followee_id))
-                return True
-            except sqlite3.IntegrityError:
-                return False
-    
-    def get_followers(self, user_id: int) -> List[dict]:
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                SELECT u.id, u.username, u.name 
-                FROM followers f 
-                JOIN users u ON f.follower_id = u.id
-                WHERE f.followee_id = ?
-            ''', (user_id,))
-            return [{'id': row[0], 'username': row[1], 'name': row[2]} for row in cursor.fetchall()]
-    
-    def get_following(self, user_id: int) -> List[dict]:
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                SELECT u.id, u.username, u.name 
-                FROM followers f 
-                JOIN users u ON f.followee_id = u.id
-                WHERE f.follower_id = ?
-            ''', (user_id,))
-            return [{'id': row[0], 'username': row[1], 'name': row[2]} for row in cursor.fetchall()]
 
-    def unfollow_user(self, follower_id: int, followee_id: int) -> bool:
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('DELETE FROM followers WHERE follower_id = ? AND followee_id = ?', 
-                        (follower_id, followee_id))
-            return cursor.rowcount > 0
+    # ======================
+    # USER OPERATIONS
+    # ======================
+    def create_user(self, username: str, name: str) -> int:
+        query = """
+        CREATE (u:User {id: $id, username: $username, name: $name})
+        RETURN u.id AS id
+        """
+        # teacher wants integer IDs → we generate them manually
+        with self.driver.session() as session:
+            # get max existing id
+            max_id = session.run("MATCH (u:User) RETURN coalesce(max(u.id), 0) AS max").single()["max"]
+            new_id = max_id + 1
+
+            result = session.run(query, id=new_id, username=username, name=name)
+            return result.single()["id"]
+
+    def get_user(self, user_id: int):
+        query = """
+        MATCH (u:User {id: $id})
+        RETURN u
+        """
+        with self.driver.session() as session:
+            record = session.run(query, id=user_id).single()
+            if record:
+                u = record["u"]
+                return {"id": u["id"], "username": u["username"], "name": u["name"]}
+            return None
+
+    def get_all_users(self):
+        query = "MATCH (u:User) RETURN u ORDER BY u.id"
+        with self.driver.session() as session:
+            return [
+                {"id": u["u"]["id"], "username": u["u"]["username"], "name": u["u"]["name"]}
+                for u in session.run(query)
+            ]
+
+    # ======================
+    # POST OPERATIONS
+    # ======================
+    def create_post(self, user_id: int, content: str) -> int:
+        query = """
+        MATCH (u:User {id: $user_id})
+        WITH u
+        OPTIONAL MATCH (p:Post)
+        WITH u, coalesce(max(p.id), 0) + 1 AS new_id
+        CREATE (u)-[:POSTED]->(p:Post {
+            id: new_id,
+            content: $content,
+            timestamp: datetime()
+        })
+        RETURN p.id AS id
+        """
+        with self.driver.session() as session:
+            return session.run(query, user_id=user_id, content=content).single()["id"]
+
+    def get_posts_by_user(self, user_id: int):
+        query = """
+        MATCH (u:User {id: $id})-[:POSTED]->(p:Post)
+        RETURN p, u
+        ORDER BY p.timestamp DESC
+        """
+        with self.driver.session() as session:
+            return [
+                {
+                    "id": r["p"]["id"],
+                    "content": r["p"]["content"],
+                    "timestamp": r["p"]["timestamp"],
+                    "username": r["u"]["username"],
+                    "name": r["u"]["name"]
+                }
+                for r in session.run(query, id=user_id)
+            ]
+
+    # ======================
+    # FOLLOW OPERATIONS
+    # ======================
+    def follow_user(self, follower_id: int, followee_id: int):
+        query = """
+        MATCH (a:User {id: $follower}), (b:User {id: $followee})
+        MERGE (a)-[:FOLLOWS]->(b)
+        """
+        with self.driver.session() as session:
+            session.run(query, follower=follower_id, followee=followee_id)
+            return True
+
+    def unfollow_user(self, follower_id: int, followee_id: int):
+        query = """
+        MATCH (a:User {id: $follower})-[r:FOLLOWS]->(b:User {id: $followee})
+        DELETE r
+        """
+        with self.driver.session() as session:
+            result = session.run(query, follower=follower_id, followee=followee_id)
+            return True
+
+    def get_followers(self, user_id: int):
+        query = """
+        MATCH (u:User {id: $id})<-[:FOLLOWS]-(f:User)
+        RETURN f
+        """
+        with self.driver.session() as session:
+            return [
+                {"id": r["f"]["id"], "username": r["f"]["username"], "name": r["f"]["name"]}
+                for r in session.run(query, id=user_id)
+            ]
+
+    def get_following(self, user_id: int):
+        query = """
+        MATCH (u:User {id: $id})-[:FOLLOWS]->(f:User)
+        RETURN f
+        """
+        with self.driver.session() as session:
+            return [
+                {"id": r["f"]["id"], "username": r["f"]["username"], "name": r["f"]["name"]}
+                for r in session.run(query, id=user_id)
+            ]
+
+    # ======================
+    # FEED
+    # ======================
+    def get_feed(self, user_id: int):
+        query = """
+        MATCH (me:User {id: $id})-[:FOLLOWS]->(u:User)-[:POSTED]->(p:Post)
+        RETURN p, u
+        ORDER BY p.timestamp DESC
+        """
+        with self.driver.session() as session:
+            return [
+                {
+                    "id": r["p"]["id"],
+                    "content": r["p"]["content"],
+                    "timestamp": r["p"]["timestamp"],
+                    "username": r["u"]["username"],
+                    "name": r["u"]["name"]
+                }
+                for r in session.run(query, id=user_id)
+            ]
+
 
 # ======================
 # Web Application
@@ -129,13 +168,7 @@ db = Database(
 )
 
 
-# Sample data initialization
-with app.app_context():
-    # Create some sample users if they don't exist
-    if not db.get_all_users():
-        db.create_user('alice', 'Alice Smith')
-        db.create_user('bob', 'Bob Johnson')
-        db.create_user('charlie', 'Charlie Brown')
+# Sample data initializatio
 
 # ======================
 # API Endpoints
